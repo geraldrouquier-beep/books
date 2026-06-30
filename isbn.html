@@ -17,19 +17,41 @@
   tr.loading td.title { color: #999; font-style: italic; }
   tr.error td.title { color: #c0392b; }
   #addRow { margin: 12px 0; padding: 8px 14px; cursor: pointer; }
+
+  #scanOverlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.75);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #scanBox {
+    background: white; padding: 16px; border-radius: 8px;
+    width: min(420px, 90vw);
+    text-align: center;
+  }
+  #scanBox h3 { margin-top: 0; }
+  #reader { width: 100%; }
+  #scanClose { margin-top: 10px; padding: 8px 16px; cursor: pointer; }
+  #scanStatus { font-size: 0.85rem; color: #555; min-height: 1.2em; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
 
 <h1>Ma bibliothèque (ISBN → Google Books)</h1>
 
-<div id="config">
-  Clé API Google Books :
-  <input type="text" id="apiKey" placeholder="Colle ta clé ici" value="AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34">
-  <small>(stockée seulement dans cette page, non sauvegardée)</small>
-</div>
-
 <button id="addRow">+ Ajouter une ligne</button>
+<button id="scanGlobal">📷 Scanner un ISBN (nouvelle ligne)</button>
+
+<div id="scanOverlay">
+  <div id="scanBox">
+    <h3>Scanner le code-barres ISBN</h3>
+    <div id="reader"></div>
+    <div id="scanStatus"></div>
+    <button id="scanClose">Fermer</button>
+  </div>
+</div>
 
 <table>
   <thead>
@@ -47,7 +69,7 @@
 
 <script>
 const grid = document.getElementById('grid');
-const apiKeyInput = document.getElementById('apiKey');
+const apiKeyInput = 'AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34';
 
 function addRow(isbnValue = '') {
   const tr = document.createElement('tr');
@@ -61,6 +83,7 @@ function addRow(isbnValue = '') {
     <td class="desc">—</td>
     <td class="actions">
       <button class="lookup">🔍</button>
+      <button class="scan">📷</button>
       <button class="remove">🗑️</button>
     </td>
   `;
@@ -68,9 +91,14 @@ function addRow(isbnValue = '') {
 
   const isbnInput = tr.querySelector('.isbn input');
   const lookupBtn = tr.querySelector('.lookup');
+  const scanBtn = tr.querySelector('.scan');
   const removeBtn = tr.querySelector('.remove');
 
   lookupBtn.addEventListener('click', () => lookupIsbn(tr));
+  scanBtn.addEventListener('click', () => openScanner((isbn) => {
+    isbnInput.value = isbn;
+    lookupIsbn(tr);
+  }));
   removeBtn.addEventListener('click', () => tr.remove());
   isbnInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') lookupIsbn(tr);
@@ -145,6 +173,65 @@ async function lookupIsbn(tr) {
 }
 
 document.getElementById('addRow').addEventListener('click', () => addRow());
+
+// --- Scanner caméra (html5-qrcode) ---
+let html5QrCode = null;
+let scanCallback = null;
+
+const scanOverlay = document.getElementById('scanOverlay');
+const scanStatus = document.getElementById('scanStatus');
+const scanCloseBtn = document.getElementById('scanClose');
+
+function openScanner(onDetected) {
+  scanCallback = onDetected;
+  scanOverlay.style.display = 'flex';
+  scanStatus.textContent = 'Ouverture de la caméra...';
+
+  html5QrCode = new Html5Qrcode('reader');
+
+  const config = {
+    fps: 10,
+    qrbox: { width: 280, height: 140 },
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8
+    ]
+  };
+
+  html5QrCode.start(
+    { facingMode: 'environment' }, // caméra arrière sur mobile
+    config,
+    (decodedText) => {
+      scanStatus.textContent = `Code détecté : ${decodedText}`;
+      const isbn = decodedText.replace(/[^0-9]/g, '');
+      closeScanner();
+      if (scanCallback) scanCallback(isbn);
+    },
+    () => {
+      // erreurs de frame ignorées (normal, ça scanne en continu)
+    }
+  ).catch((err) => {
+    scanStatus.textContent = 'Impossible d\'accéder à la caméra : ' + err;
+  });
+}
+
+function closeScanner() {
+  scanOverlay.style.display = 'none';
+  if (html5QrCode) {
+    html5QrCode.stop().then(() => html5QrCode.clear()).catch(() => {});
+    html5QrCode = null;
+  }
+}
+
+scanCloseBtn.addEventListener('click', closeScanner);
+
+document.getElementById('scanGlobal').addEventListener('click', () => {
+  openScanner((isbn) => {
+    addRow(isbn);
+    const lastRow = grid.lastElementChild;
+    lookupIsbn(lastRow);
+  });
+});
 
 // Quelques lignes vides au démarrage
 addRow();
