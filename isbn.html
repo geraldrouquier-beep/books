@@ -69,7 +69,6 @@
 
 <script>
 const grid = document.getElementById('grid');
-const apiKeyInput = 'AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34';
 
 function addRow(isbnValue = '') {
   const tr = document.createElement('tr');
@@ -111,7 +110,7 @@ async function lookupIsbn(tr) {
   const authorCell = tr.querySelector('.author');
   const dateCell = tr.querySelector('.date');
   const descCell = tr.querySelector('.desc');
-  const apiKey = apiKeyInput.value.trim();
+  const apiKey = "AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34";
 
   if (!isbn) return;
   if (!apiKey) {
