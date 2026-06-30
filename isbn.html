@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Ma bibliothèque ISBN</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 20px; background: #f7f7f7; }
+  h1 { font-size: 1.4rem; }
+  #config { margin-bottom: 15px; }
+  #config input { padding: 6px; width: 320px; }
+  table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+  th, td { border: 1px solid #ddd; padding: 8px; font-size: 0.9rem; vertical-align: top; }
+  th { background: #2c3e50; color: white; text-align: left; }
+  td.isbn input { width: 130px; padding: 4px; }
+  td.desc { max-width: 350px; max-height: 120px; overflow-y: auto; }
+  td.actions button { cursor: pointer; }
+  tr.loading td.title { color: #999; font-style: italic; }
+  tr.error td.title { color: #c0392b; }
+  #addRow { margin: 12px 0; padding: 8px 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<h1>Ma bibliothèque (ISBN → Google Books)</h1>
+
+<div id="config">
+  Clé API Google Books :
+  <input type="text" id="apiKey" placeholder="Colle ta clé ici" value="AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34">
+  <small>(stockée seulement dans cette page, non sauvegardée)</small>
+</div>
+
+<button id="addRow">+ Ajouter une ligne</button>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:140px">ISBN</th>
+      <th>Titre</th>
+      <th>Auteur(s)</th>
+      <th style="width:110px">Date de publication</th>
+      <th>Description</th>
+      <th style="width:60px">Action</th>
+    </tr>
+  </thead>
+  <tbody id="grid"></tbody>
+</table>
+
+<script>
+const grid = document.getElementById('grid');
+const apiKeyInput = document.getElementById('apiKey');
+
+function addRow(isbnValue = '') {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="isbn">
+      <input type="text" placeholder="ex: 9782290436301" value="${isbnValue}">
+    </td>
+    <td class="title">—</td>
+    <td class="author">—</td>
+    <td class="date">—</td>
+    <td class="desc">—</td>
+    <td class="actions">
+      <button class="lookup">🔍</button>
+      <button class="remove">🗑️</button>
+    </td>
+  `;
+  grid.appendChild(tr);
+
+  const isbnInput = tr.querySelector('.isbn input');
+  const lookupBtn = tr.querySelector('.lookup');
+  const removeBtn = tr.querySelector('.remove');
+
+  lookupBtn.addEventListener('click', () => lookupIsbn(tr));
+  removeBtn.addEventListener('click', () => tr.remove());
+  isbnInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') lookupIsbn(tr);
+  });
+}
+
+async function lookupIsbn(tr) {
+  const isbn = tr.querySelector('.isbn input').value.trim();
+  const titleCell = tr.querySelector('.title');
+  const authorCell = tr.querySelector('.author');
+  const dateCell = tr.querySelector('.date');
+  const descCell = tr.querySelector('.desc');
+  const apiKey = apiKeyInput.value.trim();
+
+  if (!isbn) return;
+  if (!apiKey) {
+    alert('Merci de renseigner ta clé API Google Books en haut de la page.');
+    return;
+  }
+
+  tr.classList.remove('error');
+  tr.classList.add('loading');
+  titleCell.textContent = 'Recherche en cours...';
+  authorCell.textContent = '—';
+  dateCell.textContent = '—';
+  descCell.textContent = '—';
+
+  try {
+    // 1) Recherche par ISBN
+    const searchUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&key=${apiKey}`;
+    const searchResp = await fetch(searchUrl);
+    if (!searchResp.ok) throw new Error(`Erreur API (${searchResp.status})`);
+    const searchData = await searchResp.json();
+
+    if (!searchData.items || searchData.items.length === 0) {
+      throw new Error('ISBN introuvable');
+    }
+
+    const item = searchData.items[0];
+    const info = item.volumeInfo || {};
+
+    titleCell.textContent = info.title || '(titre inconnu)';
+    authorCell.textContent = (info.authors && info.authors.join(', ')) || '(auteur inconnu)';
+    dateCell.textContent = info.publishedDate || '—';
+
+    // 2) Si la description n'est pas déjà dans la réponse, on va la chercher via selfLink
+    if (info.description) {
+      descCell.textContent = info.description;
+    } else if (item.selfLink) {
+      descCell.textContent = 'Chargement de la description...';
+      const detailResp = await fetch(`${item.selfLink}?key=${apiKey}`);
+      if (detailResp.ok) {
+        const detailData = await detailResp.json();
+        descCell.textContent =
+          (detailData.volumeInfo && detailData.volumeInfo.description) || '(pas de description disponible)';
+      } else {
+        descCell.textContent = '(pas de description disponible)';
+      }
+    } else {
+      descCell.textContent = '(pas de description disponible)';
+    }
+
+    tr.classList.remove('loading');
+  } catch (err) {
+    tr.classList.remove('loading');
+    tr.classList.add('error');
+    titleCell.textContent = err.message || 'Erreur';
+    authorCell.textContent = '—';
+    dateCell.textContent = '—';
+    descCell.textContent = '—';
+  }
+}
+
+document.getElementById('addRow').addEventListener('click', () => addRow());
+
+// Quelques lignes vides au démarrage
+addRow();
+addRow();
+addRow();
+</script>
+
+</body>
+</html>
