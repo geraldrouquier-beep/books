@@ -91,6 +91,10 @@
 <div id="scanOverlay">
   <div id="scanBox">
     <h3>Scanner le code-barres ISBN</h3>
+    <p style="font-size:0.85rem; color:#555; margin: 4px 0 10px;">
+      Place le code-barres du livre <strong>horizontalement</strong> dans le cadre.<br>
+      Approche doucement jusqu'à la mise au point automatique.
+    </p>
     <div id="reader"></div>
     <div id="scanStatus"></div>
     <button id="scanClose">Fermer</button>
@@ -295,10 +299,15 @@ function openScanner(onDetected) {
 
   html5QrCode = new Html5Qrcode('reader');
 
-  // Config sans formatsToSupport : meilleure compatibilité iOS Safari
+  // Config adaptée iOS : pas de qrbox fixe (scan toute la surface), fps augmenté
   const config = {
-    fps: 10,
-    qrbox: { width: 250, height: 150 }
+    fps: 15,
+    // qrbox dynamique = 85% de la largeur du reader, meilleure détection sur iOS
+    qrbox: (viewfinderWidth, viewfinderHeight) => ({
+      width: Math.floor(viewfinderWidth * 0.85),
+      height: Math.floor(viewfinderHeight * 0.5)
+    }),
+    aspectRatio: 1.5
   };
 
   const onSuccess = (decodedText) => {
