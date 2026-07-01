@@ -38,6 +38,30 @@
   #reader { width: 100%; }
   #scanClose { margin-top: 10px; padding: 8px 16px; cursor: pointer; }
   #scanStatus { font-size: 0.85rem; color: #555; min-height: 1.2em; }
+
+  /* Menu contextuel clic droit */
+  #contextMenu {
+    display: none;
+    position: fixed;
+    z-index: 2000;
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    min-width: 200px;
+    padding: 4px 0;
+    font-size: 0.9rem;
+  }
+  #contextMenu ul { list-style: none; margin: 0; padding: 0; }
+  #contextMenu li {
+    padding: 8px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #contextMenu li:hover { background: #f0f4ff; }
+  #contextMenu hr { margin: 4px 0; border: none; border-top: 1px solid #eee; }
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.1/dist/ag-grid-community.min.js"></script>
@@ -71,6 +95,15 @@
     <div id="scanStatus"></div>
     <button id="scanClose">Fermer</button>
   </div>
+</div>
+
+<div id="contextMenu">
+  <ul>
+    <li id="ctxExportCsvAll">📄 Exporter tout en CSV</li>
+    <li id="ctxExportCsvFiltered">🔎 Exporter la sélection filtrée en CSV</li>
+    <hr>
+    <li id="ctxAddRow">➕ Ajouter une ligne</li>
+  </ul>
 </div>
 
 <div id="myGrid" class="ag-theme-alpine"></div>
@@ -262,28 +295,43 @@ function openScanner(onDetected) {
 
   html5QrCode = new Html5Qrcode('reader');
 
+  // Config sans formatsToSupport : meilleure compatibilité iOS Safari
   const config = {
     fps: 10,
-    qrbox: { width: 280, height: 140 },
-    formatsToSupport: [
-      Html5QrcodeSupportedFormats.EAN_13,
-      Html5QrcodeSupportedFormats.EAN_8
-    ]
+    qrbox: { width: 250, height: 150 }
   };
 
-  html5QrCode.start(
+  const onSuccess = (decodedText) => {
+    const isbn = decodedText.replace(/[^0-9]/g, '');
+    closeScanner();
+    if (scanCallback) scanCallback(isbn);
+  };
+
+  const onError = () => {}; // erreurs de frame ignorées (scan continu)
+
+  // Tentatives successives : caméra arrière exacte → caméra arrière → n'importe quelle caméra
+  // Indispensable sur iOS Safari qui peut rejeter certaines contraintes
+  const constraints = [
+    { facingMode: { exact: 'environment' } },
     { facingMode: 'environment' },
-    config,
-    (decodedText) => {
-      scanStatus.textContent = `Code détecté : ${decodedText}`;
-      const isbn = decodedText.replace(/[^0-9]/g, '');
-      closeScanner();
-      if (scanCallback) scanCallback(isbn);
-    },
-    () => {}
-  ).catch((err) => {
-    scanStatus.textContent = "Impossible d'accéder à la caméra : " + err;
-  });
+    {}
+  ];
+
+  async function tryStart(index = 0) {
+    if (index >= constraints.length) {
+      scanStatus.textContent = "Impossible d'accéder à la caméra. Vérifie les autorisations dans Réglages > Safari > Caméra.";
+      return;
+    }
+    try {
+      await html5QrCode.start(constraints[index], config, onSuccess, onError);
+      scanStatus.textContent = '';
+    } catch (err) {
+      // Essai suivant
+      tryStart(index + 1);
+    }
+  }
+
+  tryStart();
 }
 
 function closeScanner() {
@@ -366,6 +414,66 @@ async function loadFromFirebase(silent = false) {
 }
 
 document.getElementById('loadFirebase').addEventListener('click', () => loadFromFirebase(false));
+
+// --- Menu contextuel clic droit sur la grille ---
+const contextMenu = document.getElementById('contextMenu');
+
+function showContextMenu(x, y) {
+  contextMenu.style.display = 'block';
+
+  // Ajustement pour ne pas sortir de l'écran
+  const menuW = contextMenu.offsetWidth;
+  const menuH = contextMenu.offsetHeight;
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+  contextMenu.style.left = (x + menuW > winW ? x - menuW : x) + 'px';
+  contextMenu.style.top  = (y + menuH > winH ? y - menuH : y) + 'px';
+}
+
+function hideContextMenu() {
+  contextMenu.style.display = 'none';
+}
+
+// Clic droit sur la grille → affiche le menu
+document.getElementById('myGrid').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  showContextMenu(e.clientX, e.clientY);
+});
+
+// Clic ailleurs → ferme le menu
+document.addEventListener('click', () => hideContextMenu());
+document.addEventListener('contextmenu', (e) => {
+  // Si clic droit en dehors de la grille, ferme aussi
+  if (!e.target.closest('#myGrid')) hideContextMenu();
+});
+
+// Export tout en CSV
+document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
+  gridApi.exportDataAsCsv({
+    fileName: `bibliotheque_${new Date().toISOString().slice(0,10)}.csv`,
+    columnKeys: ['isbn', 'title', 'author', 'date', 'description'],
+    processCellCallback: (params) => params.value ?? ''
+  });
+  hideContextMenu();
+});
+
+// Export seulement les lignes filtrées/visibles
+document.getElementById('ctxExportCsvFiltered').addEventListener('click', () => {
+  gridApi.exportDataAsCsv({
+    fileName: `bibliotheque_filtre_${new Date().toISOString().slice(0,10)}.csv`,
+    columnKeys: ['isbn', 'title', 'author', 'date', 'description'],
+    onlyRowsWithSelectedNodes: false,
+    shouldRowBeSkipped: (params) => !params.node.displayed,
+    processCellCallback: (params) => params.value ?? ''
+  });
+  hideContextMenu();
+});
+
+// Ajouter une ligne depuis le menu contextuel
+document.getElementById('ctxAddRow').addEventListener('click', () => {
+  addRow();
+  hideContextMenu();
+});
 
 // --- Sauvegarde dans Firestore ---
 document.getElementById('saveFirebase').addEventListener('click', async () => {
