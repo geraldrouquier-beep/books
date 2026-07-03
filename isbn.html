@@ -17,7 +17,16 @@
   #quickFilter { padding: 8px; width: 220px; }
   #fbStatus { font-size: 0.85rem; color: #555; }
 
-  #myGrid { height: 520px; width: 100%; }
+  /* Grille plus grande par défaut et redimensionnable verticalement */
+  #myGrid { 
+    height: 700px; 
+    width: 100%; 
+    resize: vertical;          /* Permet le redimensionnement vertical à la souris */
+    overflow: hidden;         /* Requis pour que la propriété resize fonctionne */
+    min-height: 350px;        /* Hauteur minimale de sécurité */
+    max-height: 90vh;         /* Empêche de dépasser de façon démesurée l'écran */
+    border-bottom: 2px solid #ddd; /* Indicateur visuel pour attraper le coin inférieur droit */
+  }
 
   .cell-btn { cursor: pointer; padding: 2px 4px; margin-right: 1px; border: none; background: none; font-size: 0.95rem; }
   .cell-btn:hover { background: #eee; border-radius: 4px; }
@@ -116,7 +125,6 @@
 const apiKeyInput = document.getElementById('apiKey');
 const fbStatus = document.getElementById('fbStatus');
 
-// --- Définition des colonnes ag-Grid ---
 let gridApi;
 
 function actionsCellRenderer(params) {
@@ -129,15 +137,76 @@ function actionsCellRenderer(params) {
   return span;
 }
 
-// --- Localisation : liste de choix possibles ---
 const LOCALISATION_VALUES = ['Salon', 'Chambre bas', 'Bureau asl', 'Bureau Gégé', 'Chambre Mimi', 'Appart'];
 
 function descCellRenderer(params) {
   const div = document.createElement('div');
   div.style.whiteSpace = 'normal';
   div.style.lineHeight = '1.3';
+  div.style.maxHeight = '120px';
+  div.style.overflowY = 'auto';
   div.textContent = params.value || '';
   return div;
+}
+
+// --- Détection des doublons d'ISBN ---
+function findDuplicateIsbnRow(isbn, excludeNode) {
+  const trimmed = (isbn || '').trim();
+  if (!trimmed) return null;
+
+  let found = null;
+  gridApi.forEachNode((node) => {
+    if (found) return;
+    if (excludeNode && node === excludeNode) return;
+    if ((node.data.isbn || '').trim() === trimmed) found = node;
+  });
+  return found;
+}
+
+// Redirection supportant le changement de page de pagination
+function navigateToExistingRow(dupNode) {
+  setTimeout(() => {
+    if (!dupNode || dupNode.rowIndex === null || dupNode.rowIndex === undefined) return;
+    
+    const pageSize = gridApi.getGridOption('paginationPageSize') || 20;
+    const targetPage = Math.floor(dupNode.rowIndex / pageSize);
+    
+    gridApi.paginationGoToPage(targetPage);
+    
+    setTimeout(() => {
+      gridApi.ensureNodeVisible(dupNode, 'middle');
+      gridApi.setFocusedCell(dupNode.rowIndex, 'isbn');
+      gridApi.flashCells({ rowNodes: [dupNode] });
+    }, 60);
+    
+  }, 120);
+}
+
+// Gestion du positionnement et ouverture automatique du mode édition pour une nouvelle ligne
+function focusAndEditNewRow(rowObj) {
+  setTimeout(() => {
+    const node = gridApi.getRowNode(String(rowObj.id));
+    
+    let rowIndex;
+    if (node && node.rowIndex !== null && node.rowIndex !== undefined && !isNaN(node.rowIndex)) {
+      rowIndex = node.rowIndex;
+    } else {
+      rowIndex = gridApi.getDisplayedRowCount() - 1;
+    }
+
+    const pageSize = gridApi.getGridOption('paginationPageSize') || 20;
+    const targetPage = Math.floor(rowIndex / pageSize);
+    
+    gridApi.paginationGoToPage(targetPage);
+    
+    setTimeout(() => {
+      if (node) {
+        gridApi.ensureNodeVisible(node, 'middle');
+      }
+      gridApi.setFocusedCell(rowIndex, 'isbn');
+      gridApi.startEditingCell({ rowIndex: rowIndex, colKey: 'isbn' });
+    }, 100);
+  }, 60);
 }
 
 const columnDefs = [
@@ -146,7 +215,29 @@ const columnDefs = [
     headerName: 'ISBN',
     editable: true,
     width: 160,
-    onCellValueChanged: (params) => lookupIsbn(params.node)
+    onCellValueChanged: (params) => {
+      const trimmedIsbn = (params.data.isbn || '').trim();
+      if (!trimmedIsbn) return;
+
+      const dup = findDuplicateIsbnRow(trimmedIsbn, params.node);
+      if (dup) {
+        setTimeout(() => {
+          const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
+          const aller = confirm(
+            `⚠️ Cet ISBN (${trimmedIsbn}) est déjà présent dans la bibliothèque : "${titre}".\n\nSouhaitez-vous aller à la ligne existante ? (Annulera la ligne en cours)`
+          );
+          
+          if (aller) {
+            gridApi.applyTransaction({ remove: [params.data] });
+            navigateToExistingRow(dup);
+          } else {
+            lookupIsbn(params.node);
+          }
+        }, 100);
+      } else {
+        lookupIsbn(params.node);
+      }
+    }
   },
   {
     field: 'localisation',
@@ -184,6 +275,16 @@ const columnDefs = [
         lookupIsbn(params.node);
       } else if (action === 'scan') {
         openScanner((isbn) => {
+          const dup = findDuplicateIsbnRow(isbn, params.node);
+          
+          if (dup) {
+            const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
+            const aller = confirm(`⚠️ Cet ISBN (${isbn}) est déjà présent : "${titre}".\n\nAller à cette ligne ?`);
+            if (aller) {
+              navigateToExistingRow(dup);
+              return; 
+            }
+          }
           params.node.setDataValue('isbn', isbn);
           lookupIsbn(params.node);
         });
@@ -211,8 +312,6 @@ const gridOptions = {
 document.addEventListener('DOMContentLoaded', () => {
   const eGridDiv = document.querySelector('#myGrid');
   gridApi = agGrid.createGrid(eGridDiv, gridOptions);
-
-  // Quelques lignes vides au démarrage si rien n'est encore chargé depuis Firebase
   loadFromFirebase(true);
 });
 
@@ -235,13 +334,15 @@ function addRow(isbn = '') {
   return row;
 }
 
-document.getElementById('addRow').addEventListener('click', () => addRow());
+document.getElementById('addRow').addEventListener('click', () => {
+  const row = addRow();
+  focusAndEditNewRow(row);
+});
 
 document.getElementById('quickFilter').addEventListener('input', (e) => {
   gridApi.setGridOption('quickFilterText', e.target.value);
 });
 
-// --- Recherche Google Books pour une ligne (rowNode ag-Grid) ---
 async function lookupIsbn(rowNode) {
   const isbn = (rowNode.data.isbn || '').trim();
   const apiKey = apiKeyInput.value.trim();
@@ -298,7 +399,6 @@ async function lookupIsbn(rowNode) {
   }
 }
 
-// --- Scanner caméra (html5-qrcode) ---
 let html5QrCode = null;
 let scanCallback = null;
 
@@ -313,10 +413,8 @@ function openScanner(onDetected) {
 
   html5QrCode = new Html5Qrcode('reader');
 
-  // Config adaptée iOS : pas de qrbox fixe (scan toute la surface), fps augmenté
   const config = {
     fps: 15,
-    // qrbox dynamique = 85% de la largeur du reader, meilleure détection sur iOS
     qrbox: (viewfinderWidth, viewfinderHeight) => ({
       width: Math.floor(viewfinderWidth * 0.85),
       height: Math.floor(viewfinderHeight * 0.5)
@@ -330,10 +428,8 @@ function openScanner(onDetected) {
     if (scanCallback) scanCallback(isbn);
   };
 
-  const onError = () => {}; // erreurs de frame ignorées (scan continu)
+  const onError = () => {};
 
-  // Tentatives successives : caméra arrière exacte → caméra arrière → n'importe quelle caméra
-  // Indispensable sur iOS Safari qui peut rejeter certaines contraintes
   const constraints = [
     { facingMode: { exact: 'environment' } },
     { facingMode: 'environment' },
@@ -349,7 +445,6 @@ function openScanner(onDetected) {
       await html5QrCode.start(constraints[index], config, onSuccess, onError);
       scanStatus.textContent = '';
     } catch (err) {
-      // Essai suivant
       tryStart(index + 1);
     }
   }
@@ -369,13 +464,24 @@ scanCloseBtn.addEventListener('click', closeScanner);
 
 document.getElementById('scanGlobal').addEventListener('click', () => {
   openScanner((isbn) => {
+    const dup = findDuplicateIsbnRow(isbn, null);
+    if (dup) {
+      const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
+      const aller = confirm(`⚠️ Cet ISBN (${isbn}) est déjà présent dans la bibliothèque : "${titre}".\n\nSouhaitez-vous aller à cette ligne ? (Annulera la création de la nouvelle)`);
+      if (aller) {
+        navigateToExistingRow(dup);
+        return; 
+      }
+    }
+    
     const row = addRow(isbn);
     const node = gridApi.getRowNode(String(row.id));
-    if (node) lookupIsbn(node);
+    if (node) {
+      lookupIsbn(node);
+    }
   });
 });
 
-// --- Firebase : configuration codée en dur ---
 const firebaseConfig = {
   apiKey: "AIzaSyAprXsoKuj9YJNvQzDE4bQL6Uty50EssfA",
   authDomain: "books-390b7.firebaseapp.com",
@@ -393,7 +499,6 @@ try {
   fbStatus.textContent = 'Erreur init Firebase : ' + err.message;
 }
 
-// --- Chargement depuis Firestore ---
 async function loadFromFirebase(silent = false) {
   if (!firestoreDb) {
     if (!silent) fbStatus.textContent = '⚠️ Firebase non initialisé.';
@@ -414,7 +519,6 @@ async function loadFromFirebase(silent = false) {
     const data = docSnap.data();
     let books = data.books || [];
 
-    // Sécurité : si "books" a été sauvegardé comme un objet (map) plutôt qu'un tableau
     if (!Array.isArray(books)) {
       books = Object.values(books);
     }
@@ -422,7 +526,7 @@ async function loadFromFirebase(silent = false) {
     const rows = books.map((b) => ({
       id: rowIdCounter++,
       isbn: b.isbn || '',
-      localisation: b.localisation || 'Salon',
+      localisation: b.localisation || '',
       title: b.title || '',
       author: b.author || '',
       date: b.date || '',
@@ -444,13 +548,10 @@ async function loadFromFirebase(silent = false) {
 
 document.getElementById('loadFirebase').addEventListener('click', () => loadFromFirebase(false));
 
-// --- Menu contextuel clic droit sur la grille ---
 const contextMenu = document.getElementById('contextMenu');
 
 function showContextMenu(x, y) {
   contextMenu.style.display = 'block';
-
-  // Ajustement pour ne pas sortir de l'écran
   const menuW = contextMenu.offsetWidth;
   const menuH = contextMenu.offsetHeight;
   const winW = window.innerWidth;
@@ -463,20 +564,16 @@ function hideContextMenu() {
   contextMenu.style.display = 'none';
 }
 
-// Clic droit sur la grille → affiche le menu
 document.getElementById('myGrid').addEventListener('contextmenu', (e) => {
   e.preventDefault();
   showContextMenu(e.clientX, e.clientY);
 });
 
-// Clic ailleurs → ferme le menu
 document.addEventListener('click', () => hideContextMenu());
 document.addEventListener('contextmenu', (e) => {
-  // Si clic droit en dehors de la grille, ferme aussi
   if (!e.target.closest('#myGrid')) hideContextMenu();
 });
 
-// Export tout en CSV
 document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_${new Date().toISOString().slice(0,10)}.csv`,
@@ -486,7 +583,6 @@ document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
   hideContextMenu();
 });
 
-// Export seulement les lignes filtrées/visibles
 document.getElementById('ctxExportCsvFiltered').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_filtre_${new Date().toISOString().slice(0,10)}.csv`,
@@ -498,13 +594,12 @@ document.getElementById('ctxExportCsvFiltered').addEventListener('click', () => 
   hideContextMenu();
 });
 
-// Ajouter une ligne depuis le menu contextuel
 document.getElementById('ctxAddRow').addEventListener('click', () => {
-  addRow();
+  const row = addRow();
   hideContextMenu();
+  focusAndEditNewRow(row);
 });
 
-// --- Sauvegarde dans Firestore ---
 document.getElementById('saveFirebase').addEventListener('click', async () => {
   if (!firestoreDb) {
     fbStatus.textContent = '⚠️ Firebase non initialisé.';
@@ -529,7 +624,7 @@ document.getElementById('saveFirebase').addEventListener('click', async () => {
 
   try {
     await firestoreDb.collection('bibliotheque').doc('grille').set({
-      books,
+      books: Array.from(books),
       updatedAt: new Date().toISOString()
     });
     fbStatus.textContent = `✅ Sauvegardé (${books.length} livre(s)).`;
