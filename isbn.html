@@ -249,14 +249,15 @@ const columnDefs = [
       values: LOCALISATION_VALUES
     }
   },
-  { field: 'title', headerName: 'Titre', flex: 2, wrapText: true, autoHeight: true },
-  { field: 'author', headerName: 'Auteur(s)', flex: 1, wrapText: true, autoHeight: true },
-  { field: 'date', headerName: 'Date de publication', width: 150 },
+  { field: 'title', headerName: 'Titre', flex: 2, wrapText: true, editable: true, autoHeight: true },
+  { field: 'author', headerName: 'Auteur(s)', flex: 1, wrapText: true, editable: true, autoHeight: true },
+  { field: 'date', headerName: 'Date de publication', editable: true, width: 150 },
   {
     field: 'description',
     headerName: 'Description',
     flex: 2,
     autoHeight: true,
+    editable: true,
     cellRenderer: descCellRenderer
   },
   {
