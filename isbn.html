@@ -48,6 +48,21 @@
   #scanClose { margin-top: 10px; padding: 8px 16px; cursor: pointer; }
   #scanStatus { font-size: 0.85rem; color: #555; min-height: 1.2em; }
 
+  #epubOverlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.75);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #epubBox {
+    background: white; padding: 16px; border-radius: 8px;
+    width: min(420px, 90vw);
+    text-align: center;
+  }
+  #epubBox h3 { margin-top: 0; }
+  #epubClose { margin-top: 4px; padding: 8px 16px; cursor: pointer; }
+
   /* Menu contextuel clic droit */
   #contextMenu {
     display: none;
@@ -77,6 +92,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
 
@@ -91,6 +107,7 @@
 <div id="toolbar">
   <button id="addRow">+ Ajouter une ligne</button>
   <button id="scanGlobal">📷 Scanner un ISBN (nouvelle ligne)</button>
+  <button id="addEpub">📖 Ajouter un EPUB</button>
   <button id="saveFirebase">💾 Sauvegarder dans Firebase</button>
   <button id="loadFirebase">📥 Charger depuis Firebase</button>
   <input type="text" id="quickFilter" placeholder="🔎 Rechercher (titre, auteur, ISBN...)">
@@ -107,6 +124,26 @@
     <div id="reader"></div>
     <div id="scanStatus"></div>
     <button id="scanClose">Fermer</button>
+  </div>
+</div>
+
+<div id="epubOverlay">
+  <div id="epubBox">
+    <h3>Ajouter un EPUB</h3>
+    <p style="font-size:0.85rem; color:#555; margin: 4px 0 10px;">
+      Sélectionne un fichier .epub sur ton disque, ou colle l'URL d'un epub.<br>
+      Seules les métadonnées (titre, auteur, date, description, ISBN) seront lues — pas le contenu du livre.
+    </p>
+    <div style="margin-bottom:10px;">
+      <label style="display:block; font-size:0.85rem; margin-bottom:4px; text-align:left;">Fichier local :</label>
+      <input type="file" id="epubFileInput" accept=".epub,application/epub+zip">
+    </div>
+    <div style="margin-bottom:10px; display:flex; gap:6px;">
+      <input type="text" id="epubUrlInput" placeholder="https://exemple.com/livre.epub" style="flex:1; padding:6px;">
+      <button id="epubUrlLoad">Charger l'URL</button>
+    </div>
+    <div id="epubStatus" style="font-size:0.85rem; color:#555; min-height:1.2em; margin-bottom:8px;"></div>
+    <button id="epubClose">Fermer</button>
   </div>
 </div>
 
@@ -138,6 +175,7 @@ function actionsCellRenderer(params) {
 }
 
 const LOCALISATION_VALUES = ['Salon', 'Chambre bas', 'Bureau asl', 'Bureau Gégé', 'Chambre Mimi', 'Appart'];
+const SUPPORT_VALUES = ['Livre', 'Epub'];
 
 function descCellRenderer(params) {
   const div = document.createElement('div');
@@ -163,8 +201,49 @@ function findDuplicateIsbnRow(isbn, excludeNode) {
   return found;
 }
 
+// Normalise un titre pour comparaison : minuscules, sans accents, sans espaces/ponctuation
+function normalizeTitleForCompare(str) {
+  return (str || '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // supprime les accents
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ''); // supprime espaces, ponctuation, tout sauf lettres/chiffres
+}
+
+// --- Détection des doublons de titre (insensible à la casse, aux accents et aux espaces) ---
+function findDuplicateTitleRow(title, excludeNode) {
+  const normalized = normalizeTitleForCompare(title);
+  if (!normalized) return null;
+
+  let found = null;
+  gridApi.forEachNode((node) => {
+    if (found) return;
+    if (excludeNode && node === excludeNode) return;
+    const nodeTitle = node.data.title || '';
+    if (nodeTitle === 'Recherche en cours...') return;
+    if (normalizeTitleForCompare(nodeTitle) === normalized) found = node;
+  });
+  return found;
+}
+
+// Affiche une confirmation de doublon et redirige si l'utilisateur accepte.
+// Retourne true si l'utilisateur a choisi d'aller à la ligne existante (et donc d'annuler l'ajout en cours).
+function confirmAndHandleDuplicate(dupNode, matchLabel, matchValue, currentRowData) {
+  const titre = dupNode.data.title && dupNode.data.title !== 'Recherche en cours...' ? dupNode.data.title : '(titre non chargé)';
+  const aller = confirm(
+    `⚠️ Un livre avec ${matchLabel} (${matchValue}) semble déjà présent dans la bibliothèque : "${titre}".\n\nSouhaitez-vous aller à la ligne existante ? (Annulera la ligne en cours)`
+  );
+  if (aller) {
+    if (currentRowData) gridApi.applyTransaction({ remove: [currentRowData] });
+    navigateToExistingRow(dupNode);
+    return true;
+  }
+  return false;
+}
+
 // Redirection supportant le changement de page de pagination
-function navigateToExistingRow(dupNode) {
+function navigateToExistingRow(dupNode, colKey = 'isbn') {
   setTimeout(() => {
     if (!dupNode || dupNode.rowIndex === null || dupNode.rowIndex === undefined) return;
     
@@ -175,7 +254,7 @@ function navigateToExistingRow(dupNode) {
     
     setTimeout(() => {
       gridApi.ensureNodeVisible(dupNode, 'middle');
-      gridApi.setFocusedCell(dupNode.rowIndex, 'isbn');
+      gridApi.setFocusedCell(dupNode.rowIndex, colKey);
       gridApi.flashCells({ rowNodes: [dupNode] });
     }, 60);
     
@@ -240,6 +319,16 @@ const columnDefs = [
     }
   },
   {
+    field: 'support',
+    headerName: 'Support',
+    width: 100,
+    editable: true,
+    cellEditor: 'agSelectCellEditor',
+    cellEditorParams: {
+      values: SUPPORT_VALUES
+    }
+  },
+  {
     field: 'localisation',
     headerName: 'Localisation',
     width: 130,
@@ -250,7 +339,27 @@ const columnDefs = [
     }
   },
   { field: 'zone', headerName: 'Zone', wrapText: true, editable: true, autoHeight: true , width: 100},
-  { field: 'title', headerName: 'Titre', flex: 2, wrapText: true, editable: true, autoHeight: true, cellRenderer: descCellRenderer, width: 220},
+  {
+    field: 'title',
+    headerName: 'Titre',
+    flex: 2,
+    wrapText: true,
+    editable: true,
+    autoHeight: true,
+    cellRenderer: descCellRenderer,
+    width: 220,
+    onCellValueChanged: (params) => {
+      const trimmedTitle = (params.data.title || '').trim();
+      if (!trimmedTitle || trimmedTitle === 'Recherche en cours...') return;
+
+      const dup = findDuplicateTitleRow(trimmedTitle, params.node);
+      if (dup) {
+        setTimeout(() => {
+          confirmAndHandleDuplicate(dup, 'un titre très proche', trimmedTitle, params.data);
+        }, 100);
+      }
+    }
+  },
   { field: 'author', headerName: 'Auteur(s)', flex: 1, wrapText: true, editable: true, autoHeight: true , cellRenderer: descCellRenderer, width: 200},
   { field: 'date', headerName: 'Date de publication', editable: true, width: 120 },
   {
@@ -318,10 +427,11 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let rowIdCounter = 1;
-function newEmptyRow(isbn = '') {
+function newEmptyRow(isbn = '', support = 'Livre') {
   return {
     id: rowIdCounter++,
     isbn,
+    support,
     localisation: '',
 	zone: '',
     title: '',
@@ -331,8 +441,8 @@ function newEmptyRow(isbn = '') {
   };
 }
 
-function addRow(isbn = '') {
-  const row = newEmptyRow(isbn);
+function addRow(isbn = '', support = 'Livre') {
+  const row = newEmptyRow(isbn, support);
   gridApi.applyTransaction({ add: [row] });
   return row;
 }
@@ -487,6 +597,180 @@ document.getElementById('scanGlobal').addEventListener('click', () => {
   });
 });
 
+// ------------------------------------------------------------------
+// Import EPUB (métadonnées uniquement, pas le contenu du livre)
+// ------------------------------------------------------------------
+const epubOverlay = document.getElementById('epubOverlay');
+const epubStatus = document.getElementById('epubStatus');
+const epubFileInput = document.getElementById('epubFileInput');
+const epubUrlInput = document.getElementById('epubUrlInput');
+const epubUrlLoad = document.getElementById('epubUrlLoad');
+const epubCloseBtn = document.getElementById('epubClose');
+
+function openEpubDialog() {
+  epubStatus.textContent = '';
+  epubFileInput.value = '';
+  epubUrlInput.value = '';
+  epubOverlay.style.display = 'flex';
+}
+
+function closeEpubDialog() {
+  epubOverlay.style.display = 'none';
+}
+
+document.getElementById('addEpub').addEventListener('click', openEpubDialog);
+epubCloseBtn.addEventListener('click', closeEpubDialog);
+
+// Extrait le texte d'une balise XML par nom (avec ou sans préfixe de namespace, ex: dc:title)
+// Nettoie une chaîne pouvant contenir du HTML (certains epub stockent leur description en HTML)
+function stripHtmlTags(html) {
+  if (!html) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const text = tmp.textContent || tmp.innerText || '';
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function getXmlTagText(xmlDoc, tagNames) {
+  for (const name of tagNames) {
+    const els = xmlDoc.getElementsByTagName(name);
+    if (els.length > 0 && els[0].textContent) return els[0].textContent.trim();
+  }
+  return '';
+}
+
+function getXmlTagTextAll(xmlDoc, tagNames) {
+  for (const name of tagNames) {
+    const els = xmlDoc.getElementsByTagName(name);
+    if (els.length > 0) {
+      return Array.from(els).map((e) => e.textContent.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+// Cherche un identifiant ISBN parmi les balises dc:identifier
+function findIsbnInIdentifiers(xmlDoc) {
+  const identifiers = xmlDoc.getElementsByTagName('dc:identifier').length
+    ? xmlDoc.getElementsByTagName('dc:identifier')
+    : xmlDoc.getElementsByTagName('identifier');
+
+  for (const el of Array.from(identifiers)) {
+    const scheme = (el.getAttribute('opf:scheme') || el.getAttribute('scheme') || '').toLowerCase();
+    const text = (el.textContent || '').trim();
+    const cleaned = text.replace(/^urn:isbn:/i, '').replace(/[^0-9Xx]/g, '');
+    if (scheme.includes('isbn') || /^isbn/i.test(text) || /^\d{9}[\dXx]$|^\d{13}$/.test(cleaned)) {
+      if (cleaned) return cleaned;
+    }
+  }
+  return '';
+}
+
+// Parse un ArrayBuffer d'epub et retourne les métadonnées {isbn, title, author, date, description}
+async function parseEpubMetadata(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+
+  const containerFile = zip.file('META-INF/container.xml');
+  if (!containerFile) throw new Error("Fichier epub invalide (container.xml introuvable)");
+  const containerXmlText = await containerFile.async('text');
+  const containerXml = new DOMParser().parseFromString(containerXmlText, 'application/xml');
+  const rootfileEl = containerXml.getElementsByTagName('rootfile')[0];
+  if (!rootfileEl) throw new Error("Fichier epub invalide (rootfile introuvable)");
+  const opfPath = rootfileEl.getAttribute('full-path');
+
+  const opfFile = zip.file(opfPath);
+  if (!opfFile) throw new Error("Fichier opf introuvable dans l'epub");
+  const opfText = await opfFile.async('text');
+  const opfXml = new DOMParser().parseFromString(opfText, 'application/xml');
+
+  const title = getXmlTagText(opfXml, ['dc:title', 'title']) || '(titre inconnu)';
+  const authors = getXmlTagTextAll(opfXml, ['dc:creator', 'creator']);
+  const author = authors.length ? authors.join(', ') : '(auteur inconnu)';
+  const date = getXmlTagText(opfXml, ['dc:date', 'date']) || '—';
+  const rawDescription = getXmlTagText(opfXml, ['dc:description', 'description']);
+  const description = stripHtmlTags(rawDescription) || '(pas de description disponible)';
+  const isbn = findIsbnInIdentifiers(opfXml);
+
+  return { isbn, title, author, date, description };
+}
+
+// Crée (ou met à jour) une ligne à partir des métadonnées d'un epub
+function addRowFromEpubMetadata(meta) {
+  if (meta.isbn) {
+    const dup = findDuplicateIsbnRow(meta.isbn, null);
+    if (dup) {
+      const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
+      const aller = confirm(`⚠️ Cet ISBN (${meta.isbn}) est déjà présent dans la bibliothèque : "${titre}".\n\nSouhaitez-vous aller à cette ligne ? (Annulera l'ajout du nouvel epub)`);
+      if (aller) {
+        navigateToExistingRow(dup);
+        return;
+      }
+    }
+  }
+
+  const dupTitle = findDuplicateTitleRow(meta.title, null);
+  if (dupTitle) {
+    const aborted = confirmAndHandleDuplicate(dupTitle, 'un titre très proche', meta.title, null);
+    if (aborted) return;
+  }
+
+  const row = newEmptyRow(meta.isbn || '', 'Epub');
+  row.title = meta.title;
+  row.author = meta.author;
+  row.date = meta.date;
+  row.description = meta.description;
+  gridApi.applyTransaction({ add: [row] });
+
+  const node = gridApi.getRowNode(String(row.id));
+  if (node) {
+    setTimeout(() => {
+      gridApi.ensureNodeVisible(node, 'middle');
+      gridApi.flashCells({ rowNodes: [node] });
+    }, 100);
+  }
+}
+
+async function handleEpubArrayBuffer(arrayBuffer, label) {
+  epubStatus.textContent = 'Lecture des métadonnées...';
+  try {
+    const meta = await parseEpubMetadata(arrayBuffer);
+    addRowFromEpubMetadata(meta);
+    epubStatus.textContent = `✅ "${meta.title}" ajouté.`;
+    setTimeout(closeEpubDialog, 800);
+  } catch (err) {
+    epubStatus.textContent = '❌ Erreur : ' + (err.message || err);
+  }
+}
+
+epubFileInput.addEventListener('change', async () => {
+  const file = epubFileInput.files[0];
+  if (!file) return;
+  epubStatus.textContent = 'Lecture du fichier...';
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    await handleEpubArrayBuffer(arrayBuffer, file.name);
+  } catch (err) {
+    epubStatus.textContent = '❌ Erreur de lecture du fichier : ' + (err.message || err);
+  }
+});
+
+epubUrlLoad.addEventListener('click', async () => {
+  const url = epubUrlInput.value.trim();
+  if (!url) {
+    epubStatus.textContent = 'Merci de saisir une URL.';
+    return;
+  }
+  epubStatus.textContent = 'Téléchargement de l\'epub...';
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Erreur HTTP (${resp.status})`);
+    const arrayBuffer = await resp.arrayBuffer();
+    await handleEpubArrayBuffer(arrayBuffer, url);
+  } catch (err) {
+    epubStatus.textContent = '❌ Erreur de téléchargement (souvent lié aux restrictions CORS du serveur distant) : ' + (err.message || err);
+  }
+});
+
 const firebaseConfig = {
   apiKey: "AIzaSyAprXsoKuj9YJNvQzDE4bQL6Uty50EssfA",
   authDomain: "books-390b7.firebaseapp.com",
@@ -531,6 +815,7 @@ async function loadFromFirebase(silent = false) {
     const rows = books.map((b) => ({
       id: rowIdCounter++,
       isbn: b.isbn || '',
+      support: b.support || 'Livre',
       localisation: b.localisation || '',
 	  zone: b.zone || '',
       title: b.title || '',
@@ -583,7 +868,7 @@ document.addEventListener('contextmenu', (e) => {
 document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_${new Date().toISOString().slice(0,10)}.csv`,
-    columnKeys: ['isbn', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
+    columnKeys: ['isbn', 'support', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
     processCellCallback: (params) => params.value ?? ''
   });
   hideContextMenu();
@@ -592,7 +877,7 @@ document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
 document.getElementById('ctxExportCsvFiltered').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_filtre_${new Date().toISOString().slice(0,10)}.csv`,
-    columnKeys: ['isbn', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
+    columnKeys: ['isbn', 'support', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
     onlyRowsWithSelectedNodes: false,
     shouldRowBeSkipped: (params) => !params.node.displayed,
     processCellCallback: (params) => params.value ?? ''
@@ -619,6 +904,7 @@ document.getElementById('saveFirebase').addEventListener('click', async () => {
     if (d.isbn && d.isbn.trim()) {
       books.push({
         isbn: d.isbn,
+        support: d.support || 'Livre',
         localisation: d.localisation,
 		zone: d.zone,
         title: d.title,
