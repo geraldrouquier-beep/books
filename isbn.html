@@ -214,7 +214,7 @@ const columnDefs = [
     field: 'isbn',
     headerName: 'ISBN',
     editable: true,
-    width: 160,
+    width: 140,
     onCellValueChanged: (params) => {
       const trimmedIsbn = (params.data.isbn || '').trim();
       if (!trimmedIsbn) return;
@@ -242,16 +242,17 @@ const columnDefs = [
   {
     field: 'localisation',
     headerName: 'Localisation',
-    width: 160,
+    width: 130,
     editable: true,
     cellEditor: 'agSelectCellEditor',
     cellEditorParams: {
       values: LOCALISATION_VALUES
     }
   },
-  { field: 'title', headerName: 'Titre', flex: 2, wrapText: true, editable: true, autoHeight: true },
-  { field: 'author', headerName: 'Auteur(s)', flex: 1, wrapText: true, editable: true, autoHeight: true },
-  { field: 'date', headerName: 'Date de publication', editable: true, width: 150 },
+  { field: 'zone', headerName: 'Zone', wrapText: true, editable: true, autoHeight: true , width: 100},
+  { field: 'title', headerName: 'Titre', flex: 2, wrapText: true, editable: true, autoHeight: true, cellRenderer: descCellRenderer, width: 220},
+  { field: 'author', headerName: 'Auteur(s)', flex: 1, wrapText: true, editable: true, autoHeight: true , cellRenderer: descCellRenderer, width: 200},
+  { field: 'date', headerName: 'Date de publication', editable: true, width: 120 },
   {
     field: 'description',
     headerName: 'Description',
@@ -322,6 +323,7 @@ function newEmptyRow(isbn = '') {
     id: rowIdCounter++,
     isbn,
     localisation: '',
+	zone: '',
     title: '',
     author: '',
     date: '',
@@ -355,6 +357,8 @@ async function lookupIsbn(rowNode) {
   }
 
   rowNode.setDataValue('title', 'Recherche en cours...');
+  rowNode.setDataValue('localisation', '');
+  rowNode.setDataValue('zone', '');
   rowNode.setDataValue('author', '');
   rowNode.setDataValue('date', '');
   rowNode.setDataValue('description', '');
@@ -372,7 +376,7 @@ async function lookupIsbn(rowNode) {
     const item = searchData.items[0];
     const info = item.volumeInfo || {};
 
-    const title = info.title || '(titre inconnu)';
+    const title = info.title || '(titre inconnu)';	
     const author = (info.authors && info.authors.join(', ')) || '(auteur inconnu)';
     const date = info.publishedDate || '—';
 
@@ -388,7 +392,7 @@ async function lookupIsbn(rowNode) {
       }
     }
 
-    rowNode.setDataValue('title', title);
+    rowNode.setDataValue('title', title);	
     rowNode.setDataValue('author', author);
     rowNode.setDataValue('date', date);
     rowNode.setDataValue('description', description);
@@ -528,6 +532,7 @@ async function loadFromFirebase(silent = false) {
       id: rowIdCounter++,
       isbn: b.isbn || '',
       localisation: b.localisation || '',
+	  zone: b.zone || '',
       title: b.title || '',
       author: b.author || '',
       date: b.date || '',
@@ -578,7 +583,7 @@ document.addEventListener('contextmenu', (e) => {
 document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_${new Date().toISOString().slice(0,10)}.csv`,
-    columnKeys: ['isbn', 'localisation', 'title', 'author', 'date', 'description'],
+    columnKeys: ['isbn', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
     processCellCallback: (params) => params.value ?? ''
   });
   hideContextMenu();
@@ -587,7 +592,7 @@ document.getElementById('ctxExportCsvAll').addEventListener('click', () => {
 document.getElementById('ctxExportCsvFiltered').addEventListener('click', () => {
   gridApi.exportDataAsCsv({
     fileName: `bibliotheque_filtre_${new Date().toISOString().slice(0,10)}.csv`,
-    columnKeys: ['isbn', 'localisation', 'title', 'author', 'date', 'description'],
+    columnKeys: ['isbn', 'localisation', 'zone', 'title', 'author', 'date', 'description'],
     onlyRowsWithSelectedNodes: false,
     shouldRowBeSkipped: (params) => !params.node.displayed,
     processCellCallback: (params) => params.value ?? ''
@@ -615,6 +620,7 @@ document.getElementById('saveFirebase').addEventListener('click', async () => {
       books.push({
         isbn: d.isbn,
         localisation: d.localisation,
+		zone: d.zone,
         title: d.title,
         author: d.author,
         date: d.date,
