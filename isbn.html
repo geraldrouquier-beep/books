@@ -63,6 +63,40 @@
   #epubBox h3 { margin-top: 0; }
   #epubClose { margin-top: 4px; padding: 8px 16px; cursor: pointer; }
 
+  #coverZoomOverlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.85);
+    z-index: 1500;
+    align-items: center; justify-content: center;
+    cursor: zoom-out;
+  }
+  #coverZoomOverlay img {
+    max-width: 85vw;
+    max-height: 85vh;
+    border-radius: 6px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  }
+
+  #backfillOverlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.75);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #backfillBox {
+    background: white; padding: 16px; border-radius: 8px;
+    width: min(480px, 90vw);
+    text-align: center;
+  }
+  #backfillBox h3 { margin-top: 0; }
+  #backfillReport {
+    max-height: 260px; overflow-y: auto; text-align: left; font-size: 0.82rem;
+    border: 1px solid #eee; border-radius: 4px; padding: 6px 8px; margin: 8px 0;
+    display: none;
+  }
+
   /* Menu contextuel clic droit */
   #contextMenu {
     display: none;
@@ -108,6 +142,7 @@
   <button id="addRow">+ Ajouter une ligne</button>
   <button id="scanGlobal">📷 Scanner un ISBN (nouvelle ligne)</button>
   <button id="addEpub">📖 Ajouter un EPUB</button>
+  <button id="backfillCovers">🖼️ Initialiser les pochettes</button>
   <button id="saveFirebase">💾 Sauvegarder dans Firebase</button>
   <button id="loadFirebase">📥 Charger depuis Firebase</button>
   <input type="text" id="quickFilter" placeholder="🔎 Rechercher (titre, auteur, ISBN...)">
@@ -152,6 +187,22 @@
   </div>
 </div>
 
+<div id="coverZoomOverlay">
+  <img id="coverZoomImg" src="" alt="Pochette en grand">
+</div>
+
+<div id="backfillOverlay">
+  <div id="backfillBox">
+    <h3>Initialiser les pochettes</h3>
+    <p style="font-size:0.85rem; color:#555; margin: 4px 0 10px;">
+      Recherche une pochette (Google Books puis Open Library) pour chaque livre de la bibliothèque qui n'en a pas encore, à partir de son ISBN.
+    </p>
+    <div id="backfillStatus" style="font-size:0.85rem; color:#555; min-height:1.2em; margin-bottom:8px;"></div>
+    <div id="backfillReport"></div>
+    <button id="backfillClose">Fermer</button>
+  </div>
+</div>
+
 <div id="contextMenu">
   <ul>
     <li id="ctxExportCsvAll">📄 Exporter tout en CSV</li>
@@ -181,6 +232,49 @@ function actionsCellRenderer(params) {
 
 const LOCALISATION_VALUES = ['Salon', 'Chambre bas', 'Bureau asl', 'Bureau Gégé', 'Chambre Mimi', 'Appart'];
 const SUPPORT_VALUES = ['Livre', 'Epub'];
+
+function coverCellRenderer(params) {
+  const wrap = document.createElement('div');
+  wrap.style.display = 'flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.justifyContent = 'center';
+  wrap.style.height = '100%';
+
+  if (params.value) {
+    const img = document.createElement('img');
+    img.src = params.value;
+    img.alt = 'Pochette';
+    img.style.maxHeight = '90px';
+    img.style.maxWidth = '60px';
+    img.style.objectFit = 'contain';
+    img.style.borderRadius = '3px';
+    img.style.boxShadow = '0 1px 3px rgba(0,0,0,0.25)';
+    img.style.cursor = 'zoom-in';
+    img.title = 'Cliquer pour agrandir';
+    // Si l'image ne charge pas (URL cassée), on masque proprement au lieu de laisser une icône cassée
+    img.onerror = () => { wrap.innerHTML = ''; };
+    img.onclick = (e) => {
+      e.stopPropagation();
+      openCoverZoom(params.value);
+    };
+    wrap.appendChild(img);
+  }
+
+  return wrap;
+}
+
+const coverZoomOverlay = document.getElementById('coverZoomOverlay');
+const coverZoomImg = document.getElementById('coverZoomImg');
+
+function openCoverZoom(url) {
+  coverZoomImg.src = url;
+  coverZoomOverlay.style.display = 'flex';
+}
+
+coverZoomOverlay.addEventListener('click', () => {
+  coverZoomOverlay.style.display = 'none';
+  coverZoomImg.src = '';
+});
 
 function descCellRenderer(params) {
   const div = document.createElement('div');
@@ -324,6 +418,16 @@ const columnDefs = [
     }
   },
   {
+    field: 'cover',
+    headerName: 'Pochette',
+    width: 90,
+    editable: false,
+    sortable: false,
+    filter: false,
+    autoHeight: true,
+    cellRenderer: coverCellRenderer
+  },
+  {
     field: 'support',
     headerName: 'Support',
     width: 100,
@@ -442,7 +546,8 @@ function newEmptyRow(isbn = '', support = 'Livre') {
     title: '',
     author: '',
     date: '',
-    description: ''
+    description: '',
+    cover: ''
   };
 }
 
@@ -490,7 +595,11 @@ async function lookupIsbnGoogleBooks(isbn, apiKey) {
     }
   }
 
-  return { title, author, date, description };
+  // Google Books fournit parfois une URL de pochette directement (thumbnail/smallThumbnail)
+  const cover =
+    (info.imageLinks && (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail)) || '';
+
+  return { title, author, date, description, cover };
 }
 
 async function lookupIsbnOpenLibrary(isbn) {
@@ -508,9 +617,120 @@ async function lookupIsbnOpenLibrary(isbn) {
   const author = (entry.authors && entry.authors.map(a => a.name).join(', ')) || '(auteur inconnu)';
   const date = entry.publish_date || '—';
   const description = entry.notes || entry.excerpts?.[0]?.text || '(pas de description disponible)';
+  const cover = (entry.cover && (entry.cover.medium || entry.cover.small || entry.cover.large)) || '';
 
-  return { title, author, date, description };
+  return { title, author, date, description, cover };
 }
+
+// Récupère uniquement une pochette (Open Library Covers API), utilisé en complément
+// quand la source principale n'a pas fourni d'image (ex: Google Books sans thumbnail).
+async function fetchCoverFromOpenLibrary(isbn) {
+  if (!isbn) return '';
+  try {
+    const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`;
+    const resp = await fetch(url);
+    if (!resp.ok) return '';
+    const data = await resp.json();
+    const entry = data[`ISBN:${isbn}`];
+    if (!entry || !entry.cover) return '';
+    return entry.cover.medium || entry.cover.small || entry.cover.large || '';
+  } catch {
+    return '';
+  }
+}
+
+// Cherche une pochette pour un ISBN donné : Google Books d'abord (si clé dispo), puis Open Library.
+async function fetchCoverForIsbn(isbn, apiKey) {
+  if (apiKey) {
+    try {
+      const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&key=${apiKey}`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const data = await resp.json();
+        const info = data.items && data.items[0] && data.items[0].volumeInfo;
+        const cover = info && info.imageLinks && (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail);
+        if (cover) return cover;
+      }
+    } catch {
+      // on continue vers Open Library
+    }
+  }
+  return await fetchCoverFromOpenLibrary(isbn);
+}
+
+// ------------------------------------------------------------------
+// Initialisation en lot des pochettes pour les livres déjà présents
+// ------------------------------------------------------------------
+const backfillOverlay = document.getElementById('backfillOverlay');
+const backfillStatus = document.getElementById('backfillStatus');
+const backfillReport = document.getElementById('backfillReport');
+const backfillCloseBtn = document.getElementById('backfillClose');
+
+async function runCoverBackfill() {
+  const apiKey = apiKeyInput.value.trim();
+  const targets = [];
+  gridApi.forEachNode((node) => {
+    const isbn = (node.data.isbn || '').trim();
+    if (isbn && !node.data.cover) targets.push(node);
+  });
+
+  if (targets.length === 0) {
+    backfillStatus.textContent = 'Tous les livres avec ISBN ont déjà une pochette (ou aucun livre avec ISBN).';
+    return;
+  }
+
+  backfillReport.style.display = 'block';
+  backfillReport.innerHTML = '';
+  const report = [];
+
+  for (let i = 0; i < targets.length; i++) {
+    const node = targets[i];
+    const isbn = (node.data.isbn || '').trim();
+    const titre = node.data.title && node.data.title !== 'Recherche en cours...' ? node.data.title : isbn;
+    backfillStatus.textContent = `Traitement ${i + 1}/${targets.length} : ${titre}`;
+
+    try {
+      const cover = await fetchCoverForIsbn(isbn, apiKey);
+      if (cover) {
+        node.setDataValue('cover', cover);
+        report.push({ label: titre, status: 'success', message: 'Pochette trouvée' });
+      } else {
+        report.push({ label: titre, status: 'notfound', message: 'Aucune pochette disponible' });
+      }
+    } catch (err) {
+      report.push({ label: titre, status: 'error', message: err.message || String(err) });
+    }
+  }
+
+  renderBackfillReport(report);
+}
+
+function renderBackfillReport(report) {
+  const okCount = report.filter((r) => r.status === 'success').length;
+  const notFoundCount = report.filter((r) => r.status === 'notfound').length;
+  const errCount = report.filter((r) => r.status === 'error').length;
+
+  backfillStatus.textContent = `Terminé : ${okCount} pochette(s) trouvée(s), ${notFoundCount} sans résultat, ${errCount} erreur(s) sur ${report.length} livre(s).`;
+
+  backfillReport.innerHTML = report
+    .map((r) => {
+      const icon = r.status === 'success' ? '✅' : r.status === 'notfound' ? '⚪' : '❌';
+      return `<div style="padding:3px 0; border-bottom:1px solid #eee;">${icon} <strong>${escapeHtml(r.label)}</strong> — ${escapeHtml(r.message)}</div>`;
+    })
+    .join('');
+}
+
+document.getElementById('backfillCovers').addEventListener('click', () => {
+  backfillStatus.textContent = 'Recherche en cours...';
+  backfillReport.style.display = 'none';
+  backfillReport.innerHTML = '';
+  backfillOverlay.style.display = 'flex';
+  runCoverBackfill();
+});
+
+backfillCloseBtn.addEventListener('click', () => {
+  backfillOverlay.style.display = 'none';
+});
 
 async function lookupIsbn(rowNode) {
   const isbn = (rowNode.data.isbn || '').trim();
@@ -524,6 +744,7 @@ async function lookupIsbn(rowNode) {
   rowNode.setDataValue('author', '');
   rowNode.setDataValue('date', '');
   rowNode.setDataValue('description', '');
+  rowNode.setDataValue('cover', '');
 
   let result = null;
   let lastError = null;
@@ -548,15 +769,22 @@ async function lookupIsbn(rowNode) {
   }
 
   if (result) {
+    // Si la source utilisée n'a pas fourni de pochette, tente Open Library en complément
+    if (!result.cover) {
+      result.cover = await fetchCoverFromOpenLibrary(isbn);
+    }
+
     rowNode.setDataValue('title', result.title);
     rowNode.setDataValue('author', result.author);
     rowNode.setDataValue('date', result.date);
     rowNode.setDataValue('description', result.description);
+    rowNode.setDataValue('cover', result.cover || '');
   } else {
     rowNode.setDataValue('title', (lastError && lastError.message) || 'Erreur');
     rowNode.setDataValue('author', '—');
     rowNode.setDataValue('date', '—');
     rowNode.setDataValue('description', '—');
+    rowNode.setDataValue('cover', '');
   }
 }
 
@@ -765,7 +993,7 @@ function checkEpubDuplicate(meta) {
 
 // Crée une ligne à partir des métadonnées d'un epub, sans vérification de doublon
 // (la vérification doit avoir été faite en amont par l'appelant).
-function addRowFromEpubMetadataSilent(meta) {
+async function addRowFromEpubMetadataSilent(meta) {
   const row = newEmptyRow(meta.isbn || '', 'Epub');
   row.title = meta.title;
   row.author = meta.author;
@@ -779,6 +1007,13 @@ function addRowFromEpubMetadataSilent(meta) {
       gridApi.ensureNodeVisible(node, 'middle');
       gridApi.flashCells({ rowNodes: [node] });
     }, 100);
+
+    // Si l'epub contenait un ISBN, tente de récupérer une pochette en tâche de fond
+    if (meta.isbn) {
+      fetchCoverFromOpenLibrary(meta.isbn).then((cover) => {
+        if (cover) node.setDataValue('cover', cover);
+      });
+    }
   }
   return row;
 }
@@ -938,7 +1173,8 @@ async function loadFromFirebase(silent = false) {
       title: b.title || '',
       author: b.author || '',
       date: b.date || '',
-      description: b.description || ''
+      description: b.description || '',
+      cover: b.cover || ''
     }));
 
     gridApi.setGridOption('rowData', rows);
@@ -1027,7 +1263,8 @@ document.getElementById('saveFirebase').addEventListener('click', async () => {
         title: d.title,
         author: d.author,
         date: d.date,
-        description: d.description
+        description: d.description,
+        cover: d.cover || ''
       });
     }
   });
