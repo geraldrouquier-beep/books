@@ -131,18 +131,23 @@
   <div id="epubBox">
     <h3>Ajouter un EPUB</h3>
     <p style="font-size:0.85rem; color:#555; margin: 4px 0 10px;">
-      Sélectionne un fichier .epub sur ton disque, ou colle l'URL d'un epub.<br>
+      Sélectionne un ou plusieurs fichiers .epub, un dossier entier, ou colle l'URL d'un epub.<br>
       Seules les métadonnées (titre, auteur, date, description, ISBN) seront lues — pas le contenu du livre.
     </p>
     <div style="margin-bottom:10px;">
-      <label style="display:block; font-size:0.85rem; margin-bottom:4px; text-align:left;">Fichier local :</label>
-      <input type="file" id="epubFileInput" accept=".epub,application/epub+zip">
+      <label style="display:block; font-size:0.85rem; margin-bottom:4px; text-align:left;">Fichier(s) local(aux) :</label>
+      <input type="file" id="epubFileInput" accept=".epub,application/epub+zip" multiple>
+    </div>
+    <div style="margin-bottom:10px;">
+      <label style="display:block; font-size:0.85rem; margin-bottom:4px; text-align:left;">Ou un dossier entier :</label>
+      <input type="file" id="epubFolderInput" webkitdirectory directory multiple>
     </div>
     <div style="margin-bottom:10px; display:flex; gap:6px;">
       <input type="text" id="epubUrlInput" placeholder="https://exemple.com/livre.epub" style="flex:1; padding:6px;">
       <button id="epubUrlLoad">Charger l'URL</button>
     </div>
     <div id="epubStatus" style="font-size:0.85rem; color:#555; min-height:1.2em; margin-bottom:8px;"></div>
+    <div id="epubReport" style="display:none; max-height:220px; overflow-y:auto; text-align:left; font-size:0.82rem; border:1px solid #eee; border-radius:4px; padding:6px 8px; margin-bottom:10px;"></div>
     <button id="epubClose">Fermer</button>
   </div>
 </div>
@@ -456,15 +461,62 @@ document.getElementById('quickFilter').addEventListener('input', (e) => {
   gridApi.setGridOption('quickFilterText', e.target.value);
 });
 
+async function lookupIsbnGoogleBooks(isbn, apiKey) {
+  const searchUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&key=${apiKey}`;
+  const searchResp = await fetch(searchUrl);
+  if (!searchResp.ok) throw new Error(`Erreur API Google Books (${searchResp.status})`);
+  const searchData = await searchResp.json();
+
+  if (!searchData.items || searchData.items.length === 0) {
+    throw new Error('ISBN introuvable sur Google Books');
+  }
+
+  const item = searchData.items[0];
+  const info = item.volumeInfo || {};
+
+  const title = info.title || '(titre inconnu)';
+  const author = (info.authors && info.authors.join(', ')) || '(auteur inconnu)';
+  const date = info.publishedDate || '—';
+
+  let description = '(pas de description disponible)';
+  if (info.description) {
+    description = info.description;
+  } else if (item.selfLink) {
+    const detailResp = await fetch(`${item.selfLink}&key=${apiKey}`);
+    if (detailResp.ok) {
+      const detailData = await detailResp.json();
+      description =
+        (detailData.volumeInfo && detailData.volumeInfo.description) || '(pas de description disponible)';
+    }
+  }
+
+  return { title, author, date, description };
+}
+
+async function lookupIsbnOpenLibrary(isbn) {
+  const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Erreur API Open Library (${resp.status})`);
+  const data = await resp.json();
+
+  const entry = data[`ISBN:${isbn}`];
+  if (!entry) {
+    throw new Error('ISBN introuvable (Google Books et Open Library)');
+  }
+
+  const title = entry.title || '(titre inconnu)';
+  const author = (entry.authors && entry.authors.map(a => a.name).join(', ')) || '(auteur inconnu)';
+  const date = entry.publish_date || '—';
+  const description = entry.notes || entry.excerpts?.[0]?.text || '(pas de description disponible)';
+
+  return { title, author, date, description };
+}
+
 async function lookupIsbn(rowNode) {
   const isbn = (rowNode.data.isbn || '').trim();
   const apiKey = apiKeyInput.value.trim();
 
   if (!isbn) return;
-  if (!apiKey) {
-    alert('Merci de renseigner ta clé API Google Books en haut de la page.');
-    return;
-  }
 
   rowNode.setDataValue('title', 'Recherche en cours...');
   rowNode.setDataValue('localisation', '');
@@ -473,41 +525,35 @@ async function lookupIsbn(rowNode) {
   rowNode.setDataValue('date', '');
   rowNode.setDataValue('description', '');
 
-  try {
-    const searchUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}&key=${apiKey}`;
-    const searchResp = await fetch(searchUrl);
-    if (!searchResp.ok) throw new Error(`Erreur API (${searchResp.status})`);
-    const searchData = await searchResp.json();
+  let result = null;
+  let lastError = null;
 
-    if (!searchData.items || searchData.items.length === 0) {
-      throw new Error('ISBN introuvable');
+  // 1. Essai via Google Books (si une clé API est renseignée)
+  if (apiKey) {
+    try {
+      result = await lookupIsbnGoogleBooks(isbn, apiKey);
+    } catch (err) {
+      lastError = err;
+      console.warn('Google Books a échoué, tentative via Open Library…', err.message);
     }
+  }
 
-    const item = searchData.items[0];
-    const info = item.volumeInfo || {};
-
-    const title = info.title || '(titre inconnu)';	
-    const author = (info.authors && info.authors.join(', ')) || '(auteur inconnu)';
-    const date = info.publishedDate || '—';
-
-    let description = '(pas de description disponible)';
-    if (info.description) {
-      description = info.description;
-    } else if (item.selfLink) {
-      const detailResp = await fetch(`${item.selfLink}&key=${apiKey}`);
-      if (detailResp.ok) {
-        const detailData = await detailResp.json();
-        description =
-          (detailData.volumeInfo && detailData.volumeInfo.description) || '(pas de description disponible)';
-      }
+  // 2. Fallback (ou source unique si pas de clé) via Open Library
+  if (!result) {
+    try {
+      result = await lookupIsbnOpenLibrary(isbn);
+    } catch (err) {
+      lastError = err;
     }
+  }
 
-    rowNode.setDataValue('title', title);	
-    rowNode.setDataValue('author', author);
-    rowNode.setDataValue('date', date);
-    rowNode.setDataValue('description', description);
-  } catch (err) {
-    rowNode.setDataValue('title', err.message || 'Erreur');
+  if (result) {
+    rowNode.setDataValue('title', result.title);
+    rowNode.setDataValue('author', result.author);
+    rowNode.setDataValue('date', result.date);
+    rowNode.setDataValue('description', result.description);
+  } else {
+    rowNode.setDataValue('title', (lastError && lastError.message) || 'Erreur');
     rowNode.setDataValue('author', '—');
     rowNode.setDataValue('date', '—');
     rowNode.setDataValue('description', '—');
@@ -602,14 +648,25 @@ document.getElementById('scanGlobal').addEventListener('click', () => {
 // ------------------------------------------------------------------
 const epubOverlay = document.getElementById('epubOverlay');
 const epubStatus = document.getElementById('epubStatus');
+const epubReport = document.getElementById('epubReport');
 const epubFileInput = document.getElementById('epubFileInput');
+const epubFolderInput = document.getElementById('epubFolderInput');
 const epubUrlInput = document.getElementById('epubUrlInput');
 const epubUrlLoad = document.getElementById('epubUrlLoad');
 const epubCloseBtn = document.getElementById('epubClose');
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str == null ? '' : String(str);
+  return div.innerHTML;
+}
+
 function openEpubDialog() {
   epubStatus.textContent = '';
+  epubReport.style.display = 'none';
+  epubReport.innerHTML = '';
   epubFileInput.value = '';
+  epubFolderInput.value = '';
   epubUrlInput.value = '';
   epubOverlay.style.display = 'flex';
 }
@@ -694,26 +751,21 @@ async function parseEpubMetadata(arrayBuffer) {
   return { isbn, title, author, date, description };
 }
 
-// Crée (ou met à jour) une ligne à partir des métadonnées d'un epub
-function addRowFromEpubMetadata(meta) {
+// Vérifie si les métadonnées d'un epub correspondent à un doublon déjà présent (ISBN ou titre),
+// sans aucune interaction utilisateur (utilisé pour le traitement en lot).
+function checkEpubDuplicate(meta) {
   if (meta.isbn) {
     const dup = findDuplicateIsbnRow(meta.isbn, null);
-    if (dup) {
-      const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
-      const aller = confirm(`⚠️ Cet ISBN (${meta.isbn}) est déjà présent dans la bibliothèque : "${titre}".\n\nSouhaitez-vous aller à cette ligne ? (Annulera l'ajout du nouvel epub)`);
-      if (aller) {
-        navigateToExistingRow(dup);
-        return;
-      }
-    }
+    if (dup) return { type: 'ISBN identique', dup };
   }
-
   const dupTitle = findDuplicateTitleRow(meta.title, null);
-  if (dupTitle) {
-    const aborted = confirmAndHandleDuplicate(dupTitle, 'un titre très proche', meta.title, null);
-    if (aborted) return;
-  }
+  if (dupTitle) return { type: 'titre très proche', dup: dupTitle };
+  return null;
+}
 
+// Crée une ligne à partir des métadonnées d'un epub, sans vérification de doublon
+// (la vérification doit avoir été faite en amont par l'appelant).
+function addRowFromEpubMetadataSilent(meta) {
   const row = newEmptyRow(meta.isbn || '', 'Epub');
   row.title = meta.title;
   row.author = meta.author;
@@ -728,30 +780,76 @@ function addRowFromEpubMetadata(meta) {
       gridApi.flashCells({ rowNodes: [node] });
     }, 100);
   }
+  return row;
 }
 
-async function handleEpubArrayBuffer(arrayBuffer, label) {
-  epubStatus.textContent = 'Lecture des métadonnées...';
-  try {
-    const meta = await parseEpubMetadata(arrayBuffer);
-    addRowFromEpubMetadata(meta);
-    epubStatus.textContent = `✅ "${meta.title}" ajouté.`;
-    setTimeout(closeEpubDialog, 800);
-  } catch (err) {
-    epubStatus.textContent = '❌ Erreur : ' + (err.message || err);
+// Traite une liste de fichiers epub (File[]) : lit chacun, vérifie les doublons,
+// ajoute une ligne si tout va bien, et construit un compte-rendu final.
+async function processEpubFileList(fileList) {
+  const files = Array.from(fileList).filter((f) => /\.epub$/i.test(f.name));
+
+  if (files.length === 0) {
+    epubStatus.textContent = 'Aucun fichier .epub trouvé dans la sélection.';
+    return;
   }
+
+  epubReport.style.display = 'block';
+  epubReport.innerHTML = '';
+  const report = [];
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    epubStatus.textContent = `Traitement ${i + 1}/${files.length} : ${file.name}`;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const meta = await parseEpubMetadata(arrayBuffer);
+      const dupInfo = checkEpubDuplicate(meta);
+
+      if (dupInfo) {
+        const titreExistant = dupInfo.dup.data.title && dupInfo.dup.data.title !== 'Recherche en cours...'
+          ? dupInfo.dup.data.title
+          : '(titre non chargé)';
+        report.push({
+          file: file.name,
+          status: 'duplicate',
+          message: `Doublon ignoré (${dupInfo.type}) — déjà présent : "${titreExistant}"`,
+        });
+      } else {
+        addRowFromEpubMetadataSilent(meta);
+        report.push({ file: file.name, status: 'success', message: meta.title });
+      }
+    } catch (err) {
+      report.push({ file: file.name, status: 'error', message: err.message || String(err) });
+    }
+  }
+
+  renderEpubReport(report);
+}
+
+function renderEpubReport(report) {
+  const okCount = report.filter((r) => r.status === 'success').length;
+  const dupCount = report.filter((r) => r.status === 'duplicate').length;
+  const errCount = report.filter((r) => r.status === 'error').length;
+
+  epubStatus.textContent = `Terminé : ${okCount} ajouté(s), ${dupCount} doublon(s) ignoré(s), ${errCount} erreur(s) sur ${report.length} fichier(s).`;
+
+  epubReport.innerHTML = report
+    .map((r) => {
+      const icon = r.status === 'success' ? '✅' : r.status === 'duplicate' ? '⚠️' : '❌';
+      return `<div style="padding:3px 0; border-bottom:1px solid #eee;">${icon} <strong>${escapeHtml(r.file)}</strong> — ${escapeHtml(r.message)}</div>`;
+    })
+    .join('');
 }
 
 epubFileInput.addEventListener('change', async () => {
-  const file = epubFileInput.files[0];
-  if (!file) return;
-  epubStatus.textContent = 'Lecture du fichier...';
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    await handleEpubArrayBuffer(arrayBuffer, file.name);
-  } catch (err) {
-    epubStatus.textContent = '❌ Erreur de lecture du fichier : ' + (err.message || err);
-  }
+  if (!epubFileInput.files || epubFileInput.files.length === 0) return;
+  await processEpubFileList(epubFileInput.files);
+});
+
+epubFolderInput.addEventListener('change', async () => {
+  if (!epubFolderInput.files || epubFolderInput.files.length === 0) return;
+  await processEpubFileList(epubFolderInput.files);
 });
 
 epubUrlLoad.addEventListener('click', async () => {
@@ -761,11 +859,30 @@ epubUrlLoad.addEventListener('click', async () => {
     return;
   }
   epubStatus.textContent = 'Téléchargement de l\'epub...';
+  epubReport.style.display = 'none';
+  epubReport.innerHTML = '';
   try {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`Erreur HTTP (${resp.status})`);
     const arrayBuffer = await resp.arrayBuffer();
-    await handleEpubArrayBuffer(arrayBuffer, url);
+    const meta = await parseEpubMetadata(arrayBuffer);
+    const dupInfo = checkEpubDuplicate(meta);
+
+    if (dupInfo) {
+      const titreExistant = dupInfo.dup.data.title && dupInfo.dup.data.title !== 'Recherche en cours...'
+        ? dupInfo.dup.data.title
+        : '(titre non chargé)';
+      const aller = confirm(`⚠️ Un livre avec ${dupInfo.type} (${meta.isbn || meta.title}) semble déjà présent : "${titreExistant}".\n\nSouhaitez-vous aller à la ligne existante ?`);
+      if (aller) {
+        navigateToExistingRow(dupInfo.dup);
+        epubStatus.textContent = 'Import annulé (doublon).';
+        return;
+      }
+    }
+
+    addRowFromEpubMetadataSilent(meta);
+    epubStatus.textContent = `✅ "${meta.title}" ajouté.`;
+    setTimeout(closeEpubDialog, 800);
   } catch (err) {
     epubStatus.textContent = '❌ Erreur de téléchargement (souvent lié aux restrictions CORS du serveur distant) : ' + (err.message || err);
   }
