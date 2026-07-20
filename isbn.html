@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.1/styles/ag-grid.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.1/styles/ag-theme-alpine.css">
 
+<script type="text/javascript" src="https://www.google.com/books/jsapi.js"></script>
+
 <style>
   body { font-family: Arial, sans-serif; margin: 20px; background: #f7f7f7; }
   h1 { font-size: 1.4rem; }
@@ -97,6 +99,23 @@
     display: none;
   }
 
+  #previewOverlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.75);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #previewBox {
+    background: white; padding: 16px; border-radius: 8px;
+    width: min(650px, 92vw);
+    text-align: center;
+  }
+  #previewBox h3 { margin-top: 0; }
+  #previewStatus { font-size: 0.85rem; color: #555; min-height: 1.2em; margin-bottom: 8px; }
+  #viewerCanvas { width: 100%; height: 500px; margin: 0 auto; }
+  #previewClose { margin-top: 10px; padding: 8px 16px; cursor: pointer; }
+
   /* Menu contextuel clic droit */
   #contextMenu {
     display: none;
@@ -134,7 +153,7 @@
 
 <div id="config" hidden='hidden'>
   Clé API Google Books :
-  <input type="text" id="apiKey" placeholder="Colle ta clé ici" value="AIzaSyBhnCaO9QmDB-JmaRjv2-zqg3ljIMsyl34">
+  <input type="text" id="apiKey" placeholder="Colle ta clé ici" value="AIzaSyBWMFGyXfE3hPDj_-VFc1HtHjenUcCD1tM">
   <small>(stockée seulement dans cette page, non sauvegardée)</small>
 </div>
 
@@ -203,6 +222,15 @@
   </div>
 </div>
 
+<div id="previewOverlay">
+  <div id="previewBox">
+    <h3>Aperçu Google Books</h3>
+    <div id="previewStatus"></div>
+    <div id="viewerCanvas"></div>
+    <button id="previewClose">Fermer</button>
+  </div>
+</div>
+
 <div id="contextMenu">
   <ul>
     <li id="ctxExportCsvAll">📄 Exporter tout en CSV</li>
@@ -224,7 +252,7 @@ function actionsCellRenderer(params) {
   const span = document.createElement('span');
   span.innerHTML = `
     <button class="cell-btn btn-lookup" data-action="lookup" title="Rechercher">🔍</button>
-    <button class="cell-btn btn-scan" data-action="scan" title="Scanner">📷</button>
+    <button class="cell-btn btn-preview" data-action="preview" title="Aperçu Google Books">📖</button>
     <button class="cell-btn btn-remove" data-action="remove" title="Supprimer">🗑️</button>
   `;
   return span;
@@ -493,21 +521,9 @@ const columnDefs = [
 
       if (action === 'lookup') {
         lookupIsbn(params.node);
-      } else if (action === 'scan') {
-        openScanner((isbn) => {
-          const dup = findDuplicateIsbnRow(isbn, params.node);
-          
-          if (dup) {
-            const titre = dup.data.title && dup.data.title !== 'Recherche en cours...' ? dup.data.title : '(titre non chargé)';
-            const aller = confirm(`⚠️ Cet ISBN (${isbn}) est déjà présent : "${titre}".\n\nAller à cette ligne ?`);
-            if (aller) {
-              navigateToExistingRow(dup);
-              return; 
-            }
-          }
-          params.node.setDataValue('isbn', isbn);
-          lookupIsbn(params.node);
-        });
+      } else if (action === 'preview') {
+        const isbn = (params.node.data.isbn || '').trim();
+        openBookPreview(isbn);
       } else if (action === 'remove') {
         gridApi.applyTransaction({ remove: [params.node.data] });
       }
@@ -850,6 +866,59 @@ function closeScanner() {
 }
 
 scanCloseBtn.addEventListener('click', closeScanner);
+
+// --- Aperçu Google Books (bouton "📖" sur chaque ligne) ---
+let googleBooksApiReady = false;
+if (window.google && google.books) {
+  google.books.load();
+  google.books.setOnLoadCallback(() => { googleBooksApiReady = true; });
+}
+
+const previewOverlay = document.getElementById('previewOverlay');
+const previewStatus = document.getElementById('previewStatus');
+const previewClose = document.getElementById('previewClose');
+const viewerCanvas = document.getElementById('viewerCanvas');
+let bookViewer = null;
+
+function openBookPreview(isbn) {
+  if (!isbn) {
+    alert("Cette ligne n'a pas d'ISBN renseigné.");
+    return;
+  }
+
+  previewOverlay.style.display = 'flex';
+  viewerCanvas.innerHTML = '';
+  previewStatus.textContent = "Chargement de l'aperçu...";
+
+  const render = () => {
+    try {
+      bookViewer = new google.books.DefaultViewer(viewerCanvas);
+      bookViewer.load(
+        'ISBN:' + isbn,
+        () => { previewStatus.textContent = ''; },
+        () => { previewStatus.textContent = 'Aucun aperçu Google Books disponible pour cet ISBN.'; }
+      );
+    } catch (e) {
+      previewStatus.textContent = "Impossible de charger l'aperçu Google Books.";
+    }
+  };
+
+  if (googleBooksApiReady) {
+    render();
+  } else if (window.google && google.books) {
+    google.books.setOnLoadCallback(render);
+  } else {
+    previewStatus.textContent = "L'API Google Books n'a pas pu être chargée.";
+  }
+}
+
+function closeBookPreview() {
+  previewOverlay.style.display = 'none';
+  viewerCanvas.innerHTML = '';
+  bookViewer = null;
+}
+
+previewClose.addEventListener('click', closeBookPreview);
 
 document.getElementById('scanGlobal').addEventListener('click', () => {
   openScanner((isbn) => {
